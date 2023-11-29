@@ -7,12 +7,15 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/xattr.h>
+#include "crypto.h"
 
+static Crypto *global_cry;
+static char global_crypto_key = (char)0x96;
 static char global_base_path[1024] = {0};
 
 char* gen_abs_path(const char* path) {
 	int size = 10240;
-	char *pabs = malloc(size);
+	char *pabs = (char*)malloc(size);
 
 	memset(pabs, 0, size);
 	snprintf(pabs, size, "%s%s", global_base_path, path);
@@ -166,7 +169,7 @@ static int cfs_setxattr(const char *path, const char *name, const char *value, s
 	return ret;
 }
 
-static int cfs_open(const char* path, struct fuse_file_info *fi)
+static int cfs_open(const char *path, struct fuse_file_info *fi)
 {
 	printf("cfs_open. path: %s\n", path);
 	return 0;
@@ -211,6 +214,8 @@ static int cfs_read(const char* path, char* buf, size_t s, off_t o, struct fuse_
 	if(fd == 0 || (ret = pread(fd, buf, s, o)) == -1 ) {
 		ret = errno;
 		printf("cfs_read error, path: %s, errno : %d\n", abs_path, ret);
+	} else {
+		global_cry->decrypto_buffer(buf, s, global_crypto_key);
 	}
 	close(fd);
 	free(abs_path);
@@ -225,9 +230,15 @@ static int cfs_write(const char* path, const char* buf, size_t s, off_t o, struc
 
 	printf("cfs_write. path: %s, offset: %ld, size: %ld\n", path, o, s);
 	fd = open(abs_path, O_SYNC|O_RDWR);
-	if(fd == 0 || (ret = pwrite(fd, buf, s, o)) == -1) {
-		ret = errno;
-		printf("cfs_write error , path: %s, errno: %d\n", abs_path, ret);
+	if(fd != 0){ 
+		char *enbuf = (char*)malloc(s);
+		memcpy(enbuf, buf, s);
+		global_cry->encrypto_buffer(enbuf, s, global_crypto_key);
+		if((ret = pwrite(fd, enbuf, s, o)) == -1) {
+			ret = errno;
+			printf("cfs_write error , path: %s, errno: %d\n", abs_path, ret);
+		}
+		free(enbuf);
 	}
 	close(fd);
 	free(abs_path);
@@ -269,33 +280,38 @@ static int cfs_rmdir(const char *path)
 }
 
 static struct fuse_operations cryptfs_ops = {
-    .init = cfs_init,
-    .destroy = cfs_destroy,
-    .open = cfs_open,
-    .mkdir = cfs_mkdir,
-    .rmdir = cfs_rmdir,
-    .readdir = cfs_readdir,
-    .releasedir = cfs_releasedir,
     .getattr = cfs_getattr,
-    .create = cfs_create,
     .mknod = cfs_mknod,
+    .mkdir = cfs_mkdir,
+    .unlink = cfs_unlink,
+    .rmdir = cfs_rmdir,
     .open = cfs_open,
     .read = cfs_read,
     .write = cfs_write,
     .flush = cfs_flush,
-    .getxattr = cfs_getxattr,
     .setxattr = cfs_setxattr,
+    .getxattr = cfs_getxattr,
     .removexattr = cfs_removexattr,
+    .readdir = cfs_readdir,
+    .releasedir = cfs_releasedir,
+    .init = cfs_init,
+    .destroy = cfs_destroy,
     .access = cfs_access,
-    .unlink = cfs_unlink,
+    .create = cfs_create,
 };
 
 int main(int argc, char *argv[])
 {
     printf("argc: %d, lastone: %s\n", argc, argv[argc-1]);
     int ret = 0;
-    strcpy(global_base_path, "/home/.mirror");
+
+	//strcpy(global_base_path, "/home/.mirror");
+    strcpy(global_base_path, argv[argc-1]);
     printf("global_base_path: %s\n", global_base_path);
+
+    global_cry = new Crypto();
+
+    argc = argc - 1;
     ret = fuse_main(argc, argv, &cryptfs_ops);
     return ret;
 }
